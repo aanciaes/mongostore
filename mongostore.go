@@ -135,6 +135,7 @@ func (m *MongoStore) MaxAge(age int) {
 	for _, codec := range m.Codecs {
 		if sc, ok := codec.(*securecookie.SecureCookie); ok {
 			sc.MaxAge(age)
+			sc.MaxLength(8192)
 		}
 	}
 }
