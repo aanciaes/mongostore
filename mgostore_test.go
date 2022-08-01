@@ -7,13 +7,17 @@
 package mongostore
 
 import (
+	"context"
 	"encoding/gob"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
-	"github.com/globalsign/mgo"
 	"github.com/gorilla/sessions"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type FlashMessage struct {
@@ -36,14 +40,27 @@ func TestMongoStore(t *testing.T) {
 	// license that can be found in the LICENSE file.
 
 	// Round 1 ----------------------------------------------------------------
-	dbsess, err := mgo.Dial("localhost")
+	mongoServerUrl := os.Getenv("<MONGODB_URI>")
+	if mongoServerUrl == "" {
+		log.Println("No mongo server url provided. Using localhost...")
+		mongoServerUrl = "mongodb://localhost:27017"
+	}
+	client, err := mongo.NewClient(options.Client().ApplyURI(mongoServerUrl))
+
+	if err := client.Connect(context.Background()); err != nil {
+		panic(err)
+	}
+
+	defer client.Disconnect(context.Background())
+
+	cookieOptions := sessions.Options{
+		Path:   "/",
+		MaxAge: 3600,
+	}
+	store, err := NewMongoStore(client.Database("test").Collection("test_session"), cookieOptions, true, []byte("secret-key"))
 	if err != nil {
 		panic(err)
 	}
-	defer dbsess.Close()
-
-	store := NewMongoStore(dbsess.DB("test").C("test_session"), 3600, true,
-		[]byte("secret-key"))
 
 	req, _ = http.NewRequest("GET", "http://localhost:8080/", nil)
 	rsp = httptest.NewRecorder()
