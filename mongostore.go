@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/securecookie"
@@ -61,28 +62,80 @@ func NewMongoStore(c *mongo.Collection, cookieOptions sessions.Options, ensureTT
 	store.MaxAge(cookieOptions.MaxAge)
 	store.MaxLength(8192)
 
-	if ensureTTL {
-		expireAfter := time.Duration(cookieOptions.MaxAge) * time.Second
+	modifiedAtIndex := getModifiedAtIndex(c)
 
-		indexOptions := options.Index()
-		indexOptions = indexOptions.SetSparse(true)
-		indexOptions = indexOptions.SetExpireAfterSeconds(int32(expireAfter.Seconds()))
+	if !ensureTTL {
+		// Delete index
+		return store, removeModifiedAtIndex(c, modifiedAtIndex)
+	}
 
-		indexModel := mongo.IndexModel{
-			Keys:    bson.M{mongoColumnModifiedAtName: 1},
-			Options: indexOptions,
-		}
+	// Create or update index
+	return store, createOrUpdateModifiedAtIndex(c, cookieOptions.MaxAge, modifiedAtIndex)
+}
 
-		ctx, cancel := context.WithTimeout(context.Background(), mongoOperationTimeout)
-		defer cancel()
+func getModifiedAtIndex(c *mongo.Collection) *mongo.IndexSpecification {
+	cur, err := c.Indexes().List(context.Background(), nil)
+	if err != nil {
+		panic(err)
+	}
+	for cur.Next(context.Background()) {
+		index := mongo.IndexSpecification{}
+		_ = cur.Decode(&index)
 
-		_, err := c.Indexes().CreateOne(ctx, indexModel)
-		if err != nil {
-			return nil, err
+		if strings.HasPrefix(index.Name, mongoColumnModifiedAtName) {
+			return &index
 		}
 	}
 
-	return store, nil
+	return nil
+}
+
+func createOrUpdateModifiedAtIndex(c *mongo.Collection, maxAge int, modifiedAtIndex *mongo.IndexSpecification) error {
+	expireAfter := time.Duration(maxAge) * time.Second
+
+	if modifiedAtIndex != nil && float64(*modifiedAtIndex.ExpireAfterSeconds) == expireAfter.Seconds() {
+		return nil
+	}
+
+	if modifiedAtIndex != nil {
+		// Indexes cannot be updated, we need to remove and create a new one
+		if err := removeModifiedAtIndex(c, modifiedAtIndex); err != nil {
+			return err
+		}
+	}
+
+	indexOptions := options.Index()
+	indexOptions = indexOptions.SetSparse(true)
+	indexOptions = indexOptions.SetExpireAfterSeconds(int32(expireAfter.Seconds()))
+
+	indexModel := mongo.IndexModel{
+		Keys:    bson.M{mongoColumnModifiedAtName: 1},
+		Options: indexOptions,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), mongoOperationTimeout)
+	defer cancel()
+
+	_, err := c.Indexes().CreateOne(ctx, indexModel)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func removeModifiedAtIndex(c *mongo.Collection, modifiedAtIndex *mongo.IndexSpecification) error {
+	if modifiedAtIndex != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), mongoOperationTimeout)
+		defer cancel()
+
+		_, err := c.Indexes().DropOne(ctx, modifiedAtIndex.Name)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // Get registers and returns a session for the given name and session store.
